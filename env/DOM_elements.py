@@ -9,7 +9,6 @@ Each element is stored as a DOMNode dataclass containing:
   - bounding box (x, y, width, height) in CSS pixels
   - all HTML attributes
   - XPath  (for precise re-location)
-  - centre pixel coordinates (cx, cy)
   - whether the element is interactable (clickable / typeable)
 
 Dependencies:
@@ -49,10 +48,6 @@ class DOMNode:
     bbox : dict  { x, y, width, height }
         Bounding box in CSS pixels relative to the viewport.
         x / y are the top-left corner.
-    cx : float
-        Horizontal centre of the element in CSS pixels.
-    cy : float
-        Vertical centre of the element in CSS pixels.
     is_clickable : bool
         True for <a>, <button>, <select>, role="button", etc.
     is_typeable : bool
@@ -65,8 +60,6 @@ class DOMNode:
     xpath:        str
     attributes:   dict[str, str]           = field(default_factory=dict)
     bbox:         dict[str, float]         = field(default_factory=dict)
-    cx:           float                    = 0.0
-    cy:           float                    = 0.0
     is_clickable: bool                     = False
     is_typeable:  bool                     = False
     is_visible:   bool                     = True
@@ -281,39 +274,13 @@ class dom_elements:
             or attrs.get("contenteditable", "false").lower() in {"true", ""}
         ) and input_type not in {"submit", "button", "reset", "image"}
 
-        cx = rect["x"] + rect["width"]  / 2
-        cy = rect["y"] + rect["height"] / 2
-
         return DOMNode(
             tag          = tag,
             text         = text,
             xpath        = xpath,
             attributes   = attrs,
             bbox         = rect,
-            cx           = cx,
-            cy           = cy,
             is_clickable = is_clickable,
             is_typeable  = is_typeable,
             is_visible   = is_visible,
         )
-
-
-# ── Smoke-test ─────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import sys
-
-    url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
-    extractor = dom_elements(url)
-    nodes     = extractor.extract()
-
-    print("\n=== Summary ===")
-    for tag, count in list(extractor.summary().items())[:15]:
-        print(f"  {tag:20s} {count}")
-
-    print("\n=== Clickable elements ===")
-    for n in extractor.filter(is_clickable=True, is_visible=True)[:10]:
-        print(" ", n)
-
-    print("\n=== Typeable elements ===")
-    for n in extractor.filter(is_typeable=True, is_visible=True):
-        print(" ", n)
