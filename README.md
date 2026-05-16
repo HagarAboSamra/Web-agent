@@ -1,21 +1,180 @@
-# Web-agent
-A modular pipeline that takes a URL and a natural language query, then predicts
-which element on the page to interact with, and whether to use a cursor click or keyboard input.
+# ◈ Web Agent — Autonomous Browser Navigation
 
-# How it works
+> RL agent that navigates real websites using visual perception, DOM analysis,
+> and **Deep Q-Learning** — no labelled data, no hardcoded rules.
 
-1. **screenshot.py** — opens the URL in a headless Chrome browser and captures a `210 × 160 × 3` RGB array in memory
-2. **image_processing.py** — feeds the array into `Global_CNN`, a 6-layer network (5 conv + avg pool + 2 FC) that produces a 384-dim visual embedding
-3. **DOM_elements.py** — extracts every DOM node from the page with its bounding box, XPath, text, and interaction flags
-4. **feature_map.py** — scores each node against the query using an 11-feature text similarity matrix (exact match, token overlap, tag weight, etc.)
-5. **local_cnn.py** — `Local_CNN` fuses the visual embedding with per-node DOM features to predict pixel location `(cx, cy)` and interaction type
-6. **env.py** — orchestrates all five modules with a single browser session and parallel scoring
+---
 
-# Installation
-pip install torch numpy selenium pillow chromedriver-autoinstaller
+## What it does
 
-## Notes
+Give it a URL and a natural-language task. It takes a screenshot, reads the DOM,
+and decides: **click / scroll / type**. After training, it runs the task greedily
+and prints each step with Q-values and rewards.
 
-- Models are randomly initialised — predictions improve once trained on labelled interaction data
-- Set `wait_seconds=2.5` for heavy JS/SPA pages if the DOM comes back incomplete
-- Set `visible_only=False` to include hidden elements in scoring
+---
+
+## Architecture
+
+```
+Screenshot (PNG)
+     │
+     ▼
+ScreenProcessor ──► (W, H, 3) float32
+     │
+     ├──► GlobalCNN ──► 256-dim
+     │      Conv×5  (5×5 / stride 2 / ReLU / He init)
+     │      FC → 256
+     │
+     ├──► LocalCNN ──► 128-dim
+     │      Gaussian mask @ cursor → weighted pool → FC
+     │
+     └──► DOM Heatmap ──► (H×W) float32
+           scrape interactive elements
+           Levenshtein score vs. query
+
+Joint vector = [global(256) | local(128) | dom(W×H)]
+     │
+     ├──► grid_head    → WHERE to click  (10×10 = 100 cells)
+     ├──► action_head  → WHAT action     (7 choices)
+     └──► key_head     → WHICH key       (72 chars)
+```
+
+---
+
+## Algorithm — Deep Q-Learning
+
+**Q-network:** linear approximation
+
+```
+Q(s, a) = s @ W + b
+```
+
+**ε-greedy selection** — explore early, exploit later:
+
+```
+a = random          with prob ε
+a = argmax Q(s, ·)  otherwise
+```
+
+**Bellman target:**
+
+```
+y = r + γ · max_a' Q_target(s', a') · (1 - done)
+```
+
+**Loss and update:**
+
+```
+L      = ( Q(s,a) - y )²
+W[:,a] -= lr · (Q(s,a) - y) · s
+```
+
+**Replay buffer** — stores `(s, a, r, s′, done)`, sampled randomly each step
+→ breaks temporal correlation.
+
+**Target network** — frozen copy, synced every C episodes
+→ prevents the moving-target problem.
+
+---
+
+## MDP
+
+| Symbol | Meaning |
+|--------|---------|
+| S | screenshot + DOM heatmap + cursor |
+| A | {left_click, scroll_up, scroll_down, move, type_text, …} |
+| R | shaped reward (URL change, DOM match, step penalty, …) |
+| γ | 0.99 |
+
+---
+
+## Methods Comparison
+
+| Method       | Updates        | Variance | Bias |
+|--------------|----------------|----------|------|
+| Monte Carlo  | End of episode | High     | None |
+| TD(0)        | Every step     | Low      | High |
+| Q-Learning   | Every step     | Low      | High |
+| DQL (this)   | Every step     | Low      | High |
+
+---
+
+## Project Structure
+
+```
+webagent/
+├── gui.py                       ← Streamlit control panel
+├── train.py                     ← DQL training + task runner
+├── dataset/
+│   └── tasks.json               ← Training task list
+├── checkpoints/                 ← Saved Q-network weights (.npz)
+└── env/
+    ├── screen_processor.py      PNG → (W,H,3) float32
+    ├── global_cnn.py            5 conv layers → 256-dim
+    ├── local_cnn.py             Gaussian attention → 128-dim
+    ├── dom_feature_extractor.py DOM scrape + Levenshtein scoring
+    ├── environment_handler.py   Perception–action loop
+    ├── reward.py                Shaped R(s,a)
+    └── miniwob_env.py           MiniWoB++ wrapper
+```
+
+---
+
+## Install
+
+```bash
+pip install streamlit playwright pillow numpy
+playwright install chromium
+```
+
+---
+
+## Run
+
+**GUI:**
+```bash
+streamlit run gui.py
+```
+
+**CLI — train then auto-run first task:**
+```bash
+python train.py --tasks dataset/tasks.json --episodes 300
+```
+
+**CLI — MiniWoB:**
+```bash
+# Serve MiniWoB locally:
+git clone https://github.com/Farama-Foundation/miniwob-plusplus
+cd miniwob-plusplus && python -m http.server 7878
+
+# Train:
+python train.py --miniwob --miniwob_tasks click-button click-link --episodes 200
+```
+
+**Run only — use a saved checkpoint:**
+```bash
+python train.py --run-only --resume checkpoints/final.npz \
+                --run-url https://github.com --run-query "Click Sign in"
+```
+
+**Show browser during task execution:**
+```bash
+python train.py --tasks dataset/tasks.json --episodes 300 --show-browser
+```
+
+---
+
+## Reward Table
+
+| Signal              | Value  |
+|---------------------|--------|
+| URL changed         | +1.00  |
+| Title matches query | +0.60  |
+| DOM element match   | +0.40  |
+| Input field focused | +0.20  |
+| Scroll progress     | +0.10  |
+| Step penalty        | −0.05  |
+| Repeat action       | −0.10  |
+| Timeout             | −1.00  |
+
+*All values clipped to [−1, +1].*

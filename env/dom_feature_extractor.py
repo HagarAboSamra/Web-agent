@@ -1,286 +1,149 @@
 """
 dom_feature_extractor.py
+Builds a query-relevance heatmap from the DOM fields provided by the
+MiniWoB++ Gymnasium API (info["dom_elements"] list from env.step / env.reset).
 
-Matches a natural-language query against interactive DOM elements extracted
-live from a Playwright ``Page`` object, then builds a 2-D text-feature map
-over the viewport where higher activations mark elements that best match
-the query.
+Each DOM element dict has keys:
+    ref, tag, text, value, id, classes, focused, tampered,
+    left, top, width, height   (all in pixels relative to viewport)
 
-* ``DOMElement`` are scraped from the live page via ``extract_dom(page)``.
-* Bounding boxes come from Playwright's ``element.bounding_box()`` API.
-* Only *visible*, *interactive* elements are considered (links, buttons,
-  inputs, selects, textareas, labelled elements).
-* The feature map dimensions default to the viewport size and are updated
-  automatically when ``extract()`` is called with a ``page`` argument.
+No Playwright required.
 """
 
 import re
 import numpy as np
-from dataclasses import dataclass
-from typing import List, Sequence, Tuple
 
 
-@dataclass
 class DOMElement:
-    """
-    A single interactive / text-bearing element from the live DOM.
+    """One interactive element from the Gymnasium info dict."""
 
-    Attributes
-    ----------
-    text : str
-        Visible label, placeholder, aria-label, or inner text.
-    x, y : float
-        Top-left corner of the bounding box in viewport pixels.
-    w, h : float
-        Bounding-box width and height in viewport pixels.
-    tag  : str
-        HTML tag name (lower-case), e.g. ``"button"``, ``"input"``.
-    selector : str
-        A CSS selector or XPath string that can be used to re-locate
-        the element on the page for action execution.
-    """
-    text:     str
-    x:        float
-    y:        float
-    w:        float
-    h:        float
-    tag:      str   = "unknown"
-    selector: str   = ""
+    def __init__(self, text, x, y, w, h, tag="unknown", ref=""):
+        self.text = text
+        self.x    = x
+        self.y    = y
+        self.w    = w
+        self.h    = h
+        self.tag  = tag
+        self.ref  = ref
 
-    @property
-    def center(self) -> Tuple[float, float]:
+    def center(self):
         return (self.x + self.w / 2.0, self.y + self.h / 2.0)
-
-
-# CSS selector that targets every element a user might interact with
-_INTERACTIVE_SELECTOR = (
-    "a[href], button, input, select, textarea, "
-    "[role='button'], [role='link'], [role='checkbox'], "
-    "[role='radio'], [role='menuitem'], [role='tab'], "
-    "[tabindex]:not([tabindex='-1'])"
-)
 
 
 class DOMFeatureExtractor:
     """
-    Builds a query-specific 2-D feature map over the browser viewport by
-    scraping interactive DOM elements from a Playwright ``Page`` and scoring
-    each one against the query using normalised edit-distance similarity.
+    Parse Gymnasium DOM info → list[DOMElement] → query-match heatmap (H, W).
 
     Parameters
     ----------
-    viewport_width  : int
-        Width of the feature map (should equal the Playwright viewport width).
+    viewport_width  : int   (matches ScreenProcessor)
     viewport_height : int
-        Height of the feature map.
     score_threshold : float
-        Minimum similarity score ``[0, 1]`` to place in the map.
     max_elements    : int
-        Cap on the number of DOM elements to score (for performance).
     """
 
-    def __init__(
-        self,
-        viewport_width:  int   = 1280,
-        viewport_height: int   = 720,
-        score_threshold: float = 0.0,
-        max_elements:    int   = 200,
-    ) -> None:
-        self.viewport_width  = viewport_width
-        self.viewport_height = viewport_height
-        self.score_threshold = score_threshold
-        self.max_elements    = max_elements
+    def __init__(self, viewport_width=160, viewport_height=210,
+                 score_threshold=0.0, max_elements=200):
+        self.vw     = viewport_width
+        self.vh     = viewport_height
+        self.thresh = score_threshold
+        self.max    = max_elements
 
-    # ------------------------------------------------------------------
-    # DOM scraping (Playwright integration)
-    # ------------------------------------------------------------------
-
-    def extract_dom(self, page) -> List[DOMElement]:
+    def extract_from_info(self, query, info):
         """
-        Scrape all visible interactive elements from a live Playwright Page.
-
         Parameters
         ----------
-        page : playwright.sync_api.Page  (or async equivalent)
-            An open Playwright page at the target URL.
+        query : str   natural-language task description
+        info  : dict  from env.step() or env.reset() — expects info["dom_elements"]
 
         Returns
         -------
-        list of DOMElement
-            Every visible, interactive element with its bounding box and
-            best available text label.
+        fmap : np.ndarray  (H, W) float32  heatmap
+        dom  : list[DOMElement]
         """
-        elements: List[DOMElement] = []
-        handles = page.query_selector_all(_INTERACTIVE_SELECTOR)
+        dom  = self._parse(info)
+        fmap = self._build_heatmap(query, dom)
+        return fmap, dom
 
-        for i, handle in enumerate(handles):
-            if i >= self.max_elements:
+    def _parse(self, info):
+        raw_elements = info.get("dom_elements", [])
+        elements = []
+        for i, el in enumerate(raw_elements):
+            if i >= self.max:
                 break
             try:
-                if not handle.is_visible():
+                x = float(el.get("left", 0))
+                y = float(el.get("top", 0))
+                w = float(el.get("width", 0))
+                h = float(el.get("height", 0))
+                if w == 0 or h == 0:
                     continue
-                bbox = handle.bounding_box()
-                if bbox is None or bbox["width"] == 0 or bbox["height"] == 0:
-                    continue
-
-                tag   = (handle.evaluate("el => el.tagName") or "").lower()
-                label = self._best_label(handle)
-                if not label:
-                    continue
-
-                elements.append(DOMElement(
-                    text     = label,
-                    x        = bbox["x"],
-                    y        = bbox["y"],
-                    w        = bbox["width"],
-                    h        = bbox["height"],
-                    tag      = tag,
-                    selector = self._unique_selector(handle, i),
-                ))
+                text = (
+                    el.get("text", "")
+                    or el.get("value", "")
+                    or el.get("id", "")
+                    or el.get("classes", "")
+                ).strip()[:120]
+                tag  = el.get("tag", "unknown").lower()
+                ref  = str(el.get("ref", i))
+                elements.append(DOMElement(text=text, x=x, y=y, w=w, h=h,
+                                           tag=tag, ref=ref))
             except Exception:
-                # Element may have detached between query and access
                 continue
-
         return elements
 
-    # ------------------------------------------------------------------
-    # Feature map construction
-    # ------------------------------------------------------------------
-
-    def extract(
-        self,
-        query:       str,
-        dom:         Sequence[DOMElement],
-        map_width:   int | None = None,
-        map_height:  int | None = None,
-    ) -> np.ndarray:
-        """
-        Build a 2-D query-specific feature map from a list of DOM elements.
-
-        Parameters
-        ----------
-        query      : natural-language task instruction.
-        dom        : DOM elements (from ``extract_dom`` or supplied manually).
-        map_width  : override feature map width (defaults to viewport_width).
-        map_height : override feature map height (defaults to viewport_height).
-
-        Returns
-        -------
-        np.ndarray
-            Float32 array of shape ``(map_height, map_width)`` where higher
-            values mark elements that match the query.
-        """
-        w = map_width  or self.viewport_width
-        h = map_height or self.viewport_height
-        feature_map = np.zeros((h, w), dtype=np.float32)
-
-        query_words = self._tokenize(query)
-        if not query_words:
-            return feature_map
-
-        for element in dom:
-            score = self._element_score(query_words, element.text)
-            if score <= self.score_threshold:
+    def _build_heatmap(self, query, dom):
+        fmap = np.zeros((self.vh, self.vw), dtype=np.float32)
+        qw   = _tokenize(query)
+        if not qw:
+            return fmap
+        for el in dom:
+            score = _score(qw, el.text)
+            if score <= self.thresh:
                 continue
-            cx, cy = element.center
-            col = int(np.clip(round(cx), 0, w - 1))
-            row = int(np.clip(round(cy), 0, h - 1))
-            if score > feature_map[row, col]:
-                feature_map[row, col] = score
+            cx, cy = el.center()
+            col = int(np.clip(round(cx), 0, self.vw - 1))
+            row = int(np.clip(round(cy), 0, self.vh - 1))
+            if score > fmap[row, col]:
+                fmap[row, col] = score
+        return fmap
 
-        return feature_map
+    def best_match(self, query, dom):
+        """Return the DOMElement that best matches query, or None."""
+        qw         = _tokenize(query)
+        best, best_s = None, 0.0
+        for el in dom:
+            s = _score(qw, el.text)
+            if s > best_s:
+                best, best_s = el, s
+        return best if best_s > 0.0 else None
 
-    def extract_from_page(self, query: str, page) -> Tuple[np.ndarray, List[DOMElement]]:
-        """
-        Convenience method: scrape DOM from a live Playwright page *and*
-        build the feature map in one call.
 
-        Returns
-        -------
-        feature_map : np.ndarray  shape (H, W)
-        dom_elements : list[DOMElement]  (re-used downstream for action targeting)
-        """
-        dom_elements = self.extract_dom(page)
-        feature_map  = self.extract(query, dom_elements)
-        return feature_map, dom_elements
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-    # ------------------------------------------------------------------
-    # Label extraction helpers
-    # ------------------------------------------------------------------
+def _tokenize(text):
+    return [t for t in re.split(r"\W+", text.lower()) if t]
 
-    @staticmethod
-    def _best_label(handle) -> str:
-        """
-        Return the richest available text label for an element, trying
-        (in order): aria-label → placeholder → value → inner text.
-        """
-        for attr in ("aria-label", "placeholder", "title", "alt", "value"):
-            val = handle.get_attribute(attr)
-            if val and val.strip():
-                return val.strip()
-        text = (handle.inner_text() or "").strip()
-        return text[:120]   # cap length to avoid noisy long strings
 
-    @staticmethod
-    def _unique_selector(handle, index: int) -> str:
-        """
-        Derive a CSS selector that can re-locate this element.
-        Falls back to a data-index attribute used by EnvironmentHandler.
-        """
-        try:
-            sel = handle.evaluate()
-            if sel:
-                return sel
-        except Exception:
-            pass
-        return f"[data-pw-index='{index}']"
+def _score(query_words, text):
+    el_words = _tokenize(text)
+    if not el_words:
+        return 0.0
+    return max(_sim(qw, w) for qw in query_words for w in el_words)
 
-    # ------------------------------------------------------------------
-    # Similarity scoring
-    # ------------------------------------------------------------------
 
-    def _element_score(self, query_words: List[str], element_text: str) -> float:
-        element_words = self._tokenize(element_text)
-        if not element_words:
-            return 0.0
-        best = 0.0
-        for qw in query_words:
-            for ew in element_words:
-                sim = self._edit_similarity(qw, ew)
-                if sim > best:
-                    best = sim
-        return best
-
-    @staticmethod
-    def _edit_similarity(a: str, b: str) -> float:
-        a, b = a.lower(), b.lower()
-        if a == b:
-            return 1.0
-        if not a or not b:
-            return 0.0
-        m, n   = len(a), len(b)
-        prev   = list(range(n + 1))
-        for i, ca in enumerate(a, 1):
-            curr = [i] + [0] * n
-            for j, cb in enumerate(b, 1):
-                curr[j] = min(
-                    prev[j]     + 1,
-                    curr[j - 1] + 1,
-                    prev[j - 1] + (ca != cb),
-                )
-            prev = curr
-        return 1.0 - prev[n] / max(m, n)
-
-    @staticmethod
-    def _tokenize(text: str) -> List[str]:
-        return [tok for tok in re.split(r"\W+", text.lower()) if tok]
-
-    # ------------------------------------------------------------------
-
-    def __repr__(self) -> str:
-        return (
-            f"DOMFeatureExtractor("
-            f"viewport={self.viewport_width}×{self.viewport_height}, "
-            f"threshold={self.score_threshold}, "
-            f"max_elements={self.max_elements})"
-        )
+def _sim(a, b):
+    """Normalised Levenshtein similarity in [0, 1]."""
+    a, b = a.lower(), b.lower()
+    if a == b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    m, n = len(a), len(b)
+    prev = list(range(n + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * n
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(prev[j] + 1, curr[j-1] + 1, prev[j-1] + (ca != cb))
+        prev = curr
+    return 1.0 - prev[n] / max(m, n)

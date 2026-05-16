@@ -1,0 +1,122 @@
+[
+  {
+    "id": "t001",
+    "url": "https://www.google.com",
+    "query": "Search for reinforcement learning tutorials",
+    "expected_action": "type_and_search",
+    "success_signal": "url_contains:search",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t002",
+    "url": "https://github.com",
+    "query": "Click the Sign in button",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:login",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t003",
+    "url": "https://en.wikipedia.org/wiki/Main_Page",
+    "query": "Navigate to the article about artificial intelligence",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:Artificial_intelligence",
+    "difficulty": "medium"
+  },
+  {
+    "id": "t004",
+    "url": "https://news.ycombinator.com",
+    "query": "Click the first story link on the front page",
+    "expected_action": "left_click",
+    "success_signal": "url_changed",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t005",
+    "url": "https://www.wikipedia.org",
+    "query": "Search for deep learning in the search box",
+    "expected_action": "type_and_search",
+    "success_signal": "url_contains:Deep_learning",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t006",
+    "url": "https://stackoverflow.com",
+    "query": "Click the Questions link in the navigation",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:questions",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t007",
+    "url": "https://arxiv.org",
+    "query": "Navigate to the Computer Science section",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:cs",
+    "difficulty": "medium"
+  },
+  {
+    "id": "t008",
+    "url": "https://pytorch.org",
+    "query": "Click Get Started to see installation instructions",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:get-started",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t009",
+    "url": "https://huggingface.co",
+    "query": "Click on the Models menu item",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:models",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t010",
+    "url": "https://openai.com",
+    "query": "Navigate to the Research page",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:research",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t011",
+    "url": "https://en.wikipedia.org/wiki/Reinforcement_learning",
+    "query": "Scroll down to find and click the Applications section link",
+    "expected_action": "scroll_and_click",
+    "success_signal": "page_section:Applications",
+    "difficulty": "medium"
+  },
+  {
+    "id": "t012",
+    "url": "https://github.com/trending",
+    "query": "Click on the first trending repository",
+    "expected_action": "left_click",
+    "success_signal": "url_contains:github.com/",
+    "difficulty": "medium"
+  },
+  {
+    "id": "t013",
+    "url": "https://scholar.google.com",
+    "query": "Search for attention is all you need paper",
+    "expected_action": "type_and_search",
+    "success_signal": "url_contains:query",
+    "difficulty": "medium"
+  },
+  {
+    "id": "t014",
+    "url": "https://www.youtube.com",
+    "query": "Search for machine learning course",
+    "expected_action": "type_and_search",
+    "success_signal": "url_contains:search_query",
+    "difficulty": "easy"
+  },
+  {
+    "id": "t015",
+    "url": "https://pypi.org",
+    "query": "Search for the numpy package",
+    "expected_action": "type_and_search",
+    "success_signal": "url_contains:numpy",
+    "difficulty": "easy"
+  }
+]
